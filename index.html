@@ -11,6 +11,8 @@
   <!-- Load Third-Party Libraries BEFORE ArcGIS JS API -->
   <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <!-- Load JSZip for handling zipped CSVs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
   <!-- Load ArcGIS Maps SDK for JavaScript -->
   <script src="https://js.arcgis.com/4.28/"></script>
@@ -23,7 +25,6 @@
       width: 100%;
     }
 
-    /* Floating Control Panel */
     #controls {
       position: absolute;
       top: 20px;
@@ -133,27 +134,79 @@
       let interpolationLayer = null;
       let pointsLayer = null;
 
-      // URL to your CSV
-      const csvUrl = "https://raw.githubusercontent.com/gladcolor/air_pollutants/master/VOC_With_Coords.csv";
+      // ---------------------------------------------------------
+      // DATA CONFIGURATION
+      // ---------------------------------------------------------
+      // Using the DIRECT raw.githubusercontent.com link to fix CORS errors
+      const dataUrl = "https://raw.githubusercontent.com/gladcolor/air_pollutants/refs/heads/master/VOC_With_Coords.zip";
+      // ---------------------------------------------------------
 
-      // 2. Fetch and Parse CSV
-      Papa.parse(csvUrl, {
-        download: true,
-        header: true,
-        dynamicTyping: true, // Converts "0.5" to 0.5 (number)
-        skipEmptyLines: true,
-        complete: function(results) {
-          allData = results.data;
-          console.log("Data loaded:", allData.length, "rows");
-          initApp(allData);
-        },
-        error: function(err) {
-          document.getElementById("status").textContent = "Error loading CSV.";
-          console.error(err);
+      // Data Loader Logic
+      loadData(dataUrl);
+
+      function loadData(url) {
+        const statusDiv = document.getElementById("status");
+        
+        if (url.endsWith(".zip")) {
+            statusDiv.textContent = "Downloading ZIP...";
+            
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) throw new Error("Network response was not ok: " + response.statusText);
+                    return response.arrayBuffer();
+                })
+                .then(data => {
+                    statusDiv.textContent = "Unzipping...";
+                    return JSZip.loadAsync(data);
+                })
+                .then(zip => {
+                    // Extract the first file found in the zip
+                    const filename = Object.keys(zip.files)[0];
+                    if (!filename) throw new Error("ZIP file is empty");
+                    
+                    console.log("Unzipping file:", filename);
+                    statusDiv.textContent = "Parsing CSV...";
+                    return zip.files[filename].async("string");
+                })
+                .then(csvText => {
+                    parseCSV(csvText, false); // false = input is string, not URL
+                })
+                .catch(error => {
+                    console.error("Error loading zip:", error);
+                    statusDiv.textContent = "Failed to load ZIP.";
+                    statusDiv.className = "error-msg";
+                    // Fallback suggestion for user
+                    if(error.message.includes("Network")) {
+                        alert("CORS Error: The browser blocked the download. Please ensure you are using the 'raw.githubusercontent.com' link.");
+                    }
+                });
+
+        } else {
+            // Standard CSV URL load
+            statusDiv.textContent = "Downloading CSV...";
+            parseCSV(url, true); // true = input is URL
         }
-      });
+      }
 
-      // 3. Initialize App and Controls
+      function parseCSV(input, isUrl) {
+          Papa.parse(input, {
+            download: isUrl, 
+            header: true,
+            dynamicTyping: true,
+            skipEmptyLines: true,
+            complete: function(results) {
+              allData = results.data;
+              console.log("Data loaded:", allData.length, "rows");
+              document.getElementById("status").textContent = "Data Ready.";
+              initApp(allData);
+            },
+            error: function(err) {
+              document.getElementById("status").textContent = "Error parsing CSV.";
+              console.error(err);
+            }
+          });
+      }
+
       function initApp(data) {
         const dateSelect = document.getElementById("dateSelect");
         const compoundSelect = document.getElementById("compoundSelect");
@@ -193,10 +246,8 @@
           const compoundSelect = document.getElementById("compoundSelect");
           const selectedDate = dateSelect.value;
           
-          // Store currently selected compound (if any) to try and preserve it
           const previousCompound = compoundSelect.value;
 
-          // Clear current compounds
           compoundSelect.innerHTML = `<option value="">-- Select Compound --</option>`;
 
           if (!selectedDate) {
@@ -221,7 +272,6 @@
             compoundSelect.appendChild(option);
           });
 
-          // UX Improvement: Auto-select previous compound if it exists in new date
           if (previousCompound && compounds.includes(previousCompound)) {
               compoundSelect.value = previousCompound;
           }
@@ -241,15 +291,12 @@
       function resetToOriginalState() {
           const statusDiv = document.getElementById("status");
           
-          // Show original layers
           webmap.layers.forEach(layer => {
-             // Ensure we don't accidentally turn on our managed layers if references linger
              if (layer !== interpolationLayer && layer !== pointsLayer) {
                  layer.visible = true;
              }
           });
 
-          // Remove generated layers
           if (interpolationLayer) { webmap.remove(interpolationLayer); interpolationLayer = null; }
           if (pointsLayer) { webmap.remove(pointsLayer); pointsLayer = null; }
 
@@ -267,14 +314,12 @@
         statusDiv.className = "";
         statusDiv.textContent = `Processing...`;
 
-        // Hide original webmap layers to avoid clutter
         webmap.layers.forEach(layer => {
             if (layer !== interpolationLayer && layer !== pointsLayer) {
                 layer.visible = false;
             }
         });
 
-        // A. Filter Data
         const filteredData = allData.filter(d => 
           d.Date_collect === selectedDate && 
           d.Compound === selectedCompound &&
@@ -285,17 +330,15 @@
           statusDiv.textContent = `Insufficient data (${filteredData.length} pts). Need 3+.`;
           statusDiv.className = "error-msg";
           
-          // Clear layers but don't show original points (keeps view clean for the specific query)
           if (interpolationLayer) { webmap.remove(interpolationLayer); interpolationLayer = null; }
           if (pointsLayer) { webmap.remove(pointsLayer); pointsLayer = null; }
           return;
         }
 
-        // B. Convert to Turf.js Points
         const points = turf.featureCollection(
           filteredData.map(d => turf.point([d.Lon, d.Lat], { 
             value: d.Adj_ppbV,
-            HouseID: String(d.HouseID) // Force string for safe labeling
+            HouseID: String(d.HouseID) 
           }))
         );
 
@@ -303,18 +346,16 @@
         let minVal = Math.min(...values);
         let maxVal = Math.max(...values);
 
-        // Safety: If min == max, creating stops will fail/look weird. Add epsilon.
         if (minVal === maxVal) {
             minVal = minVal - 0.0001;
             maxVal = maxVal + 0.0001;
         }
 
-        // C. Perform Interpolation (IDW)
         const options = { gridType: 'hex', property: 'value', units: 'kilometers' };
         
         let grid;
         try {
-          // grid cell size 0.2km for smooth look
+          // grid cell size 0.2km
           grid = turf.interpolate(points, 0.2, options);
         } catch (e) {
           console.error(e);
@@ -323,18 +364,15 @@
           return;
         }
 
-        // D. Create Blob URLs
         const gridBlob = new Blob([JSON.stringify(grid)], { type: "application/json" });
         const gridUrl = URL.createObjectURL(gridBlob);
 
         const pointsBlob = new Blob([JSON.stringify(points)], { type: "application/json" });
         const pointsUrl = URL.createObjectURL(pointsBlob);
 
-        // E. Remove old layers
         if (interpolationLayer) { webmap.remove(interpolationLayer); }
         if (pointsLayer) { webmap.remove(pointsLayer); }
 
-        // F. Create New ArcGIS Layers
         const renderer = {
           type: "simple",
           symbol: {
@@ -371,7 +409,6 @@
             font: { family: "Arial", size: 10, weight: "bold" }
           },
           labelPlacement: "above-center",
-          // Force Text() casting to be safe against numeric HouseIDs
           labelExpressionInfo: { expression: "Text($feature.HouseID)" } 
         };
 
