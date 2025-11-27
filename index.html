@@ -8,11 +8,11 @@
   <!-- Load ArcGIS CSS -->
   <link rel="stylesheet" href="https://js.arcgis.com/4.28/esri/themes/light/main.css" />
 
-  <!-- CRITICAL FIX: Load Third-Party Libraries BEFORE ArcGIS JS API -->
+  <!-- Load Third-Party Libraries BEFORE ArcGIS JS API -->
   <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 
-  <!-- Load ArcGIS Maps SDK for JavaScript (MUST BE LAST) -->
+  <!-- Load ArcGIS Maps SDK for JavaScript -->
   <script src="https://js.arcgis.com/4.28/"></script>
 
   <style>
@@ -59,32 +59,22 @@
       padding: 8px;
       border: 1px solid #ccc;
       border-radius: 4px;
-    }
-
-    #btn-update {
-      width: 100%;
-      padding: 10px;
-      background-color: #0079c1;
-      color: white;
-      border: none;
-      border-radius: 4px;
       cursor: pointer;
-      font-weight: bold;
     }
 
-    #btn-update:hover {
-      background-color: #005a8f;
-    }
-
+    /* Status text styling */
     #status {
       margin-top: 10px;
       font-size: 0.85rem;
       color: #555;
+      font-style: italic;
+      min-height: 1.2em;
     }
     
     .error-msg {
-        color: #d90000;
+        color: #d90000 !important;
         font-weight: bold;
+        font-style: normal !important;
     }
   </style>
 </head>
@@ -98,18 +88,16 @@
     <div class="form-group">
       <label for="dateSelect">Select Date:</label>
       <select id="dateSelect" disabled>
-        <option>Loading data...</option>
+        <option value="">Loading data...</option>
       </select>
     </div>
 
     <div class="form-group">
       <label for="compoundSelect">Select Compound:</label>
       <select id="compoundSelect" disabled>
-        <option>Loading data...</option>
+        <option value="">-- First Select Date --</option>
       </select>
     </div>
-
-    <button id="btn-update" disabled>Interpolate Surface</button>
     
     <div id="status">Waiting for data...</div>
   </div>
@@ -170,11 +158,11 @@
       function initApp(data) {
         const dateSelect = document.getElementById("dateSelect");
         const compoundSelect = document.getElementById("compoundSelect");
-        const btn = document.getElementById("btn-update");
 
         const dates = [...new Set(data.map(d => d.Date_collect))].filter(Boolean).sort();
 
-        dateSelect.innerHTML = "";
+        // Populate Date Dropdown with a Placeholder
+        dateSelect.innerHTML = `<option value="">-- Select Date --</option>`;
         dates.forEach(date => {
           const option = document.createElement("option");
           option.value = date;
@@ -182,17 +170,23 @@
           dateSelect.appendChild(option);
         });
 
-        dateSelect.addEventListener("change", () => updateCompoundDropdown(data));
-        btn.addEventListener("click", runInterpolation);
+        // Initialize Compound Dropdown
+        compoundSelect.innerHTML = `<option value="">-- Select Compound --</option>`;
 
+        // Add Event Listeners for Instant Interaction
+        dateSelect.addEventListener("change", () => {
+            updateCompoundDropdown(data);
+            checkAndRunInterpolation();
+        });
+        
+        compoundSelect.addEventListener("change", () => {
+            checkAndRunInterpolation();
+        });
+
+        // Enable Inputs
         dateSelect.disabled = false;
         compoundSelect.disabled = false;
-        btn.disabled = false;
-        document.getElementById("status").textContent = "Ready.";
-
-        if (dates.length > 0) {
-            updateCompoundDropdown(data);
-        }
+        document.getElementById("status").textContent = "Please select a date.";
       }
 
       function updateCompoundDropdown(data) {
@@ -200,10 +194,16 @@
           const compoundSelect = document.getElementById("compoundSelect");
           const selectedDate = dateSelect.value;
 
+          // Clear current compounds
+          compoundSelect.innerHTML = `<option value="">-- Select Compound --</option>`;
+
+          if (!selectedDate) {
+              compoundSelect.innerHTML = `<option value="">-- First Select Date --</option>`;
+              return;
+          }
+
           const relevantData = data.filter(d => d.Date_collect === selectedDate);
           const compounds = [...new Set(relevantData.map(d => d.Compound))].filter(Boolean).sort();
-
-          compoundSelect.innerHTML = "";
           
           if(compounds.length === 0) {
               const option = document.createElement("option");
@@ -218,33 +218,57 @@
             option.textContent = comp;
             compoundSelect.appendChild(option);
           });
-
-          runInterpolation();
+          
+          document.getElementById("status").textContent = "Now select a compound.";
       }
 
-      // Helper function to hide the original WebMap layers
-      function hideOriginalLayers() {
+      // Check if both dropdowns have values, then run. Otherwise reset.
+      function checkAndRunInterpolation() {
+          const selectedDate = document.getElementById("dateSelect").value;
+          const selectedCompound = document.getElementById("compoundSelect").value;
+
+          if (selectedDate && selectedCompound) {
+              runInterpolation(selectedDate, selectedCompound);
+          } else {
+              resetToOriginalState();
+          }
+      }
+
+      function resetToOriginalState() {
+          const statusDiv = document.getElementById("status");
+          
+          // Show original layers
+          webmap.layers.forEach(layer => {
+             // Avoid un-hiding our temp layers if they still exist for some reason
+             if (layer !== interpolationLayer && layer !== pointsLayer) {
+                 layer.visible = true;
+             }
+          });
+
+          // Remove generated layers
+          if (interpolationLayer) { webmap.remove(interpolationLayer); interpolationLayer = null; }
+          if (pointsLayer) { webmap.remove(pointsLayer); pointsLayer = null; }
+
+          const selectedDate = document.getElementById("dateSelect").value;
+          if (!selectedDate) {
+             statusDiv.textContent = "Showing all original points.";
+          } else {
+             statusDiv.textContent = "Select a compound to visualize.";
+          }
+          statusDiv.className = "";
+      }
+
+      function runInterpolation(selectedDate, selectedCompound) {
+        const statusDiv = document.getElementById("status");
+        statusDiv.className = "";
+        statusDiv.textContent = `Processing...`;
+
+        // Hide original webmap layers to avoid clutter
         webmap.layers.forEach(layer => {
-            // Check if the layer is NOT one of our generated layers
             if (layer !== interpolationLayer && layer !== pointsLayer) {
-                // You can target specific layers by title if preferred:
-                // if (layer.title === "VOC_Houses") ...
                 layer.visible = false;
             }
         });
-      }
-
-      // 5. Core Interpolation Logic
-      function runInterpolation() {
-        const selectedDate = document.getElementById("dateSelect").value;
-        const selectedCompound = document.getElementById("compoundSelect").value;
-        const statusDiv = document.getElementById("status");
-        
-        statusDiv.className = "";
-        statusDiv.textContent = `Processing ${selectedCompound}...`;
-
-        // Hide original webmap points so they don't overlap
-        hideOriginalLayers();
 
         // A. Filter Data
         const filteredData = allData.filter(d => 
@@ -254,9 +278,10 @@
         );
 
         if (filteredData.length < 3) {
-          statusDiv.textContent = `Insufficient data: Found ${filteredData.length} points. Need 3+.`;
+          statusDiv.textContent = `Insufficient data (${filteredData.length} pts). Need 3+.`;
           statusDiv.className = "error-msg";
           
+          // Clean up if data is bad, but keep interface responsive
           if (interpolationLayer) { webmap.remove(interpolationLayer); interpolationLayer = null; }
           if (pointsLayer) { webmap.remove(pointsLayer); pointsLayer = null; }
           return;
@@ -279,12 +304,11 @@
         
         let grid;
         try {
-          // REDUCED CELL SIZE: Changed from 2 to 0.2 kilometers
-          // This makes the hexagons much smaller and the surface smoother
+          // grid cell size 0.2km for smooth look
           grid = turf.interpolate(points, 0.2, options);
         } catch (e) {
           console.error(e);
-          statusDiv.textContent = "Math Error: Points are too close or invalid.";
+          statusDiv.textContent = "Math Error: Points are too close/invalid.";
           statusDiv.className = "error-msg";
           return;
         }
@@ -301,8 +325,6 @@
         if (pointsLayer) { webmap.remove(pointsLayer); }
 
         // F. Create New ArcGIS Layers
-
-        // 1. The Interpolation Layer (Bottom)
         const renderer = {
           type: "simple",
           symbol: {
@@ -330,7 +352,6 @@
           }
         });
 
-        // 2. The Points Layer (Top)
         const labelClass = {
           symbol: {
             type: "text",
@@ -368,7 +389,7 @@
 
         view.goTo(points).catch(err => {});
         
-        statusDiv.textContent = `Showing ${filteredData.length} points for ${selectedCompound}`;
+        statusDiv.textContent = `Visualizing ${selectedCompound} (${filteredData.length} sensors)`;
       }
     });
   </script>
