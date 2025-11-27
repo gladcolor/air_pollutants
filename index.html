@@ -62,7 +62,6 @@
       cursor: pointer;
     }
 
-    /* Status text styling */
     #status {
       margin-top: 10px;
       font-size: 0.85rem;
@@ -141,7 +140,7 @@
       Papa.parse(csvUrl, {
         download: true,
         header: true,
-        dynamicTyping: true,
+        dynamicTyping: true, // Converts "0.5" to 0.5 (number)
         skipEmptyLines: true,
         complete: function(results) {
           allData = results.data;
@@ -161,7 +160,7 @@
 
         const dates = [...new Set(data.map(d => d.Date_collect))].filter(Boolean).sort();
 
-        // Populate Date Dropdown with a Placeholder
+        // Populate Date Dropdown
         dateSelect.innerHTML = `<option value="">-- Select Date --</option>`;
         dates.forEach(date => {
           const option = document.createElement("option");
@@ -173,7 +172,7 @@
         // Initialize Compound Dropdown
         compoundSelect.innerHTML = `<option value="">-- Select Compound --</option>`;
 
-        // Add Event Listeners for Instant Interaction
+        // Add Event Listeners
         dateSelect.addEventListener("change", () => {
             updateCompoundDropdown(data);
             checkAndRunInterpolation();
@@ -193,6 +192,9 @@
           const dateSelect = document.getElementById("dateSelect");
           const compoundSelect = document.getElementById("compoundSelect");
           const selectedDate = dateSelect.value;
+          
+          // Store currently selected compound (if any) to try and preserve it
+          const previousCompound = compoundSelect.value;
 
           // Clear current compounds
           compoundSelect.innerHTML = `<option value="">-- Select Compound --</option>`;
@@ -218,11 +220,13 @@
             option.textContent = comp;
             compoundSelect.appendChild(option);
           });
-          
-          document.getElementById("status").textContent = "Now select a compound.";
+
+          // UX Improvement: Auto-select previous compound if it exists in new date
+          if (previousCompound && compounds.includes(previousCompound)) {
+              compoundSelect.value = previousCompound;
+          }
       }
 
-      // Check if both dropdowns have values, then run. Otherwise reset.
       function checkAndRunInterpolation() {
           const selectedDate = document.getElementById("dateSelect").value;
           const selectedCompound = document.getElementById("compoundSelect").value;
@@ -239,7 +243,7 @@
           
           // Show original layers
           webmap.layers.forEach(layer => {
-             // Avoid un-hiding our temp layers if they still exist for some reason
+             // Ensure we don't accidentally turn on our managed layers if references linger
              if (layer !== interpolationLayer && layer !== pointsLayer) {
                  layer.visible = true;
              }
@@ -281,7 +285,7 @@
           statusDiv.textContent = `Insufficient data (${filteredData.length} pts). Need 3+.`;
           statusDiv.className = "error-msg";
           
-          // Clean up if data is bad, but keep interface responsive
+          // Clear layers but don't show original points (keeps view clean for the specific query)
           if (interpolationLayer) { webmap.remove(interpolationLayer); interpolationLayer = null; }
           if (pointsLayer) { webmap.remove(pointsLayer); pointsLayer = null; }
           return;
@@ -291,13 +295,19 @@
         const points = turf.featureCollection(
           filteredData.map(d => turf.point([d.Lon, d.Lat], { 
             value: d.Adj_ppbV,
-            HouseID: d.HouseID 
+            HouseID: String(d.HouseID) // Force string for safe labeling
           }))
         );
 
         const values = filteredData.map(d => d.Adj_ppbV);
-        const minVal = Math.min(...values);
-        const maxVal = Math.max(...values);
+        let minVal = Math.min(...values);
+        let maxVal = Math.max(...values);
+
+        // Safety: If min == max, creating stops will fail/look weird. Add epsilon.
+        if (minVal === maxVal) {
+            minVal = minVal - 0.0001;
+            maxVal = maxVal + 0.0001;
+        }
 
         // C. Perform Interpolation (IDW)
         const options = { gridType: 'hex', property: 'value', units: 'kilometers' };
@@ -361,7 +371,8 @@
             font: { family: "Arial", size: 10, weight: "bold" }
           },
           labelPlacement: "above-center",
-          labelExpressionInfo: { expression: "$feature.HouseID" }
+          // Force Text() casting to be safe against numeric HouseIDs
+          labelExpressionInfo: { expression: "Text($feature.HouseID)" } 
         };
 
         pointsLayer = new GeoJSONLayer({
